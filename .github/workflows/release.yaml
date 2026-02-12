@@ -20,11 +20,15 @@ permissions:
 jobs:
   build-binaries:
     name: Build Standalone Binaries (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
@@ -64,11 +68,7 @@ jobs:
 
       - name: Test static binary (verify it's actually static)
         run: |
-          if [ "${{ matrix.arch }}" = "amd64" ]; then
-            ldd bin/httpbin-static-${{ matrix.arch }} || echo "Static binary confirmed (no dynamic dependencies)"
-          else
-            echo "Skipping ldd test for cross-compiled ARM binary"
-          fi
+          ldd bin/httpbin-static-${{ matrix.arch }} || echo "Static binary confirmed (no dynamic dependencies)"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
