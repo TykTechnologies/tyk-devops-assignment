@@ -44,13 +44,13 @@ jobs:
       - name: Get version
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
           VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
 
       - name: Build dynamic binary
         run: |
@@ -80,7 +80,7 @@ jobs:
 
   build-packages:
     name: Build ${{ matrix.package_type }} for ${{ matrix.distro_name }} (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       matrix:
@@ -91,12 +91,14 @@ jobs:
             package_type: deb
             install_test_cmd: "apt-get install -y"
             arch: amd64
+            runner: ubuntu-latest
 
           - distro: debian:trixie
             distro_name: debian13
             package_type: deb
             install_test_cmd: "apt-get install -y"
             arch: arm64
+            runner: ubuntu-24.04-arm
 
           # Debian 12 (Bookworm)
           - distro: debian:bookworm
@@ -104,12 +106,14 @@ jobs:
             package_type: deb
             install_test_cmd: "apt-get install -y"
             arch: amd64
+            runner: ubuntu-latest
 
           - distro: debian:bookworm
             distro_name: debian12
             package_type: deb
             install_test_cmd: "apt-get install -y"
             arch: arm64
+            runner: ubuntu-24.04-arm
 
           # RHEL 8 / Rocky Linux 8
           - distro: rockylinux:8
@@ -117,12 +121,14 @@ jobs:
             package_type: rpm
             install_test_cmd: "yum install -y"
             arch: amd64
+            runner: ubuntu-latest
 
           - distro: rockylinux:8
             distro_name: el8
             package_type: rpm
             install_test_cmd: "yum install -y"
             arch: arm64
+            runner: ubuntu-24.04-arm
 
           # RHEL 9 / Rocky Linux 9
           - distro: rockylinux:9
@@ -130,12 +136,14 @@ jobs:
             package_type: rpm
             install_test_cmd: "yum install -y"
             arch: amd64
+            runner: ubuntu-latest
 
           - distro: rockylinux:9
             distro_name: el9
             package_type: rpm
             install_test_cmd: "yum install -y"
             arch: arm64
+            runner: ubuntu-24.04-arm
 
           # Fedora Latest
           - distro: fedora:latest
@@ -143,24 +151,19 @@ jobs:
             package_type: rpm
             install_test_cmd: "dnf install -y"
             arch: amd64
+            runner: ubuntu-latest
 
           - distro: fedora:latest
             distro_name: fedora
             package_type: rpm
             install_test_cmd: "dnf install -y"
             arch: arm64
+            runner: ubuntu-24.04-arm
 
-    # Run job inside the distro container
     container:
       image: ${{ matrix.distro }}
-      options: --platform linux/${{ matrix.arch == 'amd64' && 'amd64' || 'arm64' }}
 
     steps:
-      - name: Wait for container to become ready
-        run: |
-          echo "Container starting, waiting for initialization..."
-          sleep 30
-
       - name: Install dependencies (Debian/Ubuntu)
         if: startsWith(matrix.distro, 'debian')
         run: |
@@ -170,7 +173,7 @@ jobs:
       - name: Install dependencies (Rocky Linux)
         if: startsWith(matrix.distro, 'rockylinux')
         run: |
-          yum install -y git curl gcc make rpm-build ca-certificates
+          yum install -y --allowerasing git curl gcc make rpm-build ca-certificates
 
       - name: Install dependencies (Fedora)
         if: startsWith(matrix.distro, 'fedora')
@@ -207,13 +210,13 @@ jobs:
       - name: Get version
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
           VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
 
       - name: Build DEB package
         if: matrix.package_type == 'deb'
@@ -303,12 +306,12 @@ jobs:
       - name: Get version
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION="${GITHUB_REF#refs/tags/}"
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
 
       - name: Create Release
         env:
