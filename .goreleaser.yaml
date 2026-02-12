@@ -1,0 +1,30 @@
+version: 2
+project_name: httpbin
+
+builds:
+  - id: fake
+    binary: httpbin
+    goos: [linux]
+    goarch: [amd64]
+    # This won't actually build, but registers the artifact
+    hooks:
+      post:
+        - cp bin/httpbin-linux-amd64 dist/httpbin_linux_amd64/httpbin || true
+    skip: true
+
+changelog:
+  disable: false
+
+release:
+  github:
+    owner: chyrag
+    name: tyk-devops-assignment
+  
+  extra_files:
+    - glob: bin/*.deb
+    - glob: bin/*.rpm
+    - glob: bin/httpbin-*
+    - glob: bin/httpbin-static-*
+
+env:
+  - GITHUB_TOKEN
