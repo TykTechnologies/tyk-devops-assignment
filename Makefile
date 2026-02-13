@@ -117,7 +117,7 @@ docker: docker-setup
 	       --push .
 	 docker buildx rm multiarch-builder
 
-fips: docker-setup
+docker-fips: docker-setup
 	@echo "Building FIPS compliant container image for $(BINARY_NAME)"
 	docker buildx build \
 	       --platform linux/amd64,linux/arm64 \
