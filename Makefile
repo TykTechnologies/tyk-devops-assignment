@@ -107,7 +107,7 @@ docker-setup:
 docker-login:
 	@echo "$$GITHUB_TOKEN" | docker login $(REGISTRY) -u $(GITHUB_USER) --password-stdin
 
-docker: docker-setup docker-login
+docker: docker-setup
 	@echo "Building container image for $(BINARY_NAME)"
 	docker buildx build \
 	       --platform linux/amd64,linux/arm64 \
@@ -117,7 +117,7 @@ docker: docker-setup docker-login
 	       --push .
 	 docker buildx rm multiarch-builder
 
-fips: docker-setup docker-login
+fips: docker-setup
 	@echo "Building FIPS compliant container image for $(BINARY_NAME)"
 	docker buildx build \
 	       --platform linux/amd64,linux/arm64 \
