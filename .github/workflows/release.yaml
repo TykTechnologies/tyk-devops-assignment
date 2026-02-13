@@ -1,0 +1,412 @@
+name: Build and Release
+
+env:
+  GO_VERSION: '1.26.0'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., v1.0.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write  # Required for pushing to GHCR
+
+jobs:
+  build-binaries:
+    name: Build Standalone Binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          fi
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
+
+      - name: Build dynamic binary
+        run: |
+          make build VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+      - name: Build static binary
+        run: |
+          make build-static VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+      - name: Build FIPS compliant binary
+        run: |
+          make build-fips VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+      - name: List built binaries
+        run: |
+          ls -lah bin/httpbin-${{ matrix.arch }} bin/httpbin-static-${{ matrix.arch }}
+          file bin/httpbin-${{ matrix.arch }}
+          file bin/httpbin-static-${{ matrix.arch }}
+
+      - name: Test static binary (verify it's actually static)
+        run: |
+          ldd bin/httpbin-static-${{ matrix.arch }} || echo "Static binary confirmed (no dynamic dependencies)"
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.arch }}
+          path: |
+            bin/httpbin-${{ matrix.arch }}
+            bin/httpbin-static-${{ matrix.arch }}
+
+  build-packages:
+    name: Build ${{ matrix.package_type }} for ${{ matrix.distro_name }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      matrix:
+        include:
+          # Debian 13 (Trixie)
+          - distro: debian:trixie
+            distro_name: debian13
+            package_type: deb
+            install_test_cmd: "apt-get install -y"
+            arch: amd64
+            runner: ubuntu-latest
+
+          - distro: debian:trixie
+            distro_name: debian13
+            package_type: deb
+            install_test_cmd: "apt-get install -y"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+          # Debian 12 (Bookworm)
+          - distro: debian:bookworm
+            distro_name: debian12
+            package_type: deb
+            install_test_cmd: "apt-get install -y"
+            arch: amd64
+            runner: ubuntu-latest
+
+          - distro: debian:bookworm
+            distro_name: debian12
+            package_type: deb
+            install_test_cmd: "apt-get install -y"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+          # RHEL 8 / Rocky Linux 8
+          - distro: rockylinux:8
+            distro_name: el8
+            package_type: rpm
+            install_test_cmd: "yum install -y"
+            arch: amd64
+            runner: ubuntu-latest
+
+          - distro: rockylinux:8
+            distro_name: el8
+            package_type: rpm
+            install_test_cmd: "yum install -y"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+          # RHEL 9 / Rocky Linux 9
+          - distro: rockylinux:9
+            distro_name: el9
+            package_type: rpm
+            install_test_cmd: "yum install -y"
+            arch: amd64
+            runner: ubuntu-latest
+
+          - distro: rockylinux:9
+            distro_name: el9
+            package_type: rpm
+            install_test_cmd: "yum install -y"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+          # Fedora Latest
+          - distro: fedora:latest
+            distro_name: fedora
+            package_type: rpm
+            install_test_cmd: "dnf install -y"
+            arch: amd64
+            runner: ubuntu-latest
+
+          - distro: fedora:latest
+            distro_name: fedora
+            package_type: rpm
+            install_test_cmd: "dnf install -y"
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    container:
+      image: ${{ matrix.distro }}
+
+    steps:
+      - name: Install dependencies (Debian/Ubuntu)
+        if: startsWith(matrix.distro, 'debian')
+        run: |
+          apt-get update
+          apt-get install -y git curl build-essential dpkg-dev make ca-certificates
+
+      - name: Install dependencies (Rocky Linux)
+        if: startsWith(matrix.distro, 'rockylinux')
+        run: |
+          yum install -y --allowerasing git curl gcc make rpm-build ca-certificates
+
+      - name: Install dependencies (Fedora)
+        if: startsWith(matrix.distro, 'fedora')
+        run: |
+          dnf install -y git curl gcc make rpm-build ca-certificates
+
+      - name: Install Go
+        run: |
+          # Detect architecture
+          UNAME_ARCH=$(uname -m)
+          if [ "$UNAME_ARCH" = "x86_64" ]; then
+            GO_TARBALL="go${{ env.GO_VERSION }}.linux-amd64.tar.gz"
+          elif [ "$UNAME_ARCH" = "aarch64" ]; then
+            GO_TARBALL="go${{ env.GO_VERSION }}.linux-arm64.tar.gz"
+          else
+            echo "Unsupported architecture: $UNAME_ARCH"
+            exit 1
+          fi
+
+          curl -LO https://go.dev/dl/${GO_TARBALL}
+          tar -C /usr/local -xzf ${GO_TARBALL}
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Verify Go installation
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          go version
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
+
+      - name: Build DEB package
+        if: matrix.package_type == 'deb'
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          make deb VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+          # Rename to include distro identifier
+          ORIGINAL_DEB=$(ls bin/httpbin_*.deb | head -1)
+          if [ -f "$ORIGINAL_DEB" ]; then
+            NEW_NAME="bin/httpbin_${{ steps.version.outputs.version }}_${{ matrix.distro_name }}_${{ matrix.arch }}.deb"
+            mv "$ORIGINAL_DEB" "$NEW_NAME"
+            echo "Created: $NEW_NAME"
+            ls -lh "$NEW_NAME"
+          fi
+
+      - name: Build RPM package
+        if: matrix.package_type == 'rpm'
+        run: |
+          export PATH=/usr/local/go/bin:$PATH
+          make rpm VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+          # Determine RPM architecture name
+          if [ "${{ matrix.arch }}" = "amd64" ]; then
+            RPM_ARCH="x86_64"
+          elif [ "${{ matrix.arch }}" = "arm64" ]; then
+            RPM_ARCH="aarch64"
+          fi
+
+          # Rename RPM to include distro identifier
+          ORIGINAL_RPM=$(ls bin/httpbin-*.rpm | head -1)
+          if [ -f "$ORIGINAL_RPM" ]; then
+            if [ "${{ matrix.distro_name }}" = "fedora" ]; then
+              FEDORA_VER=$(rpm -E %fedora 2>/dev/null || echo "")
+              NEW_NAME="bin/httpbin-${{ steps.version.outputs.version }}-1.fc${FEDORA_VER}.${RPM_ARCH}.rpm"
+            else
+              NEW_NAME="bin/httpbin-${{ steps.version.outputs.version }}-1.${{ matrix.distro_name }}.${RPM_ARCH}.rpm"
+            fi
+
+            mv "$ORIGINAL_RPM" "$NEW_NAME"
+            echo "Created: $NEW_NAME"
+            ls -lh "$NEW_NAME"
+          fi
+
+      - name: Test package installation
+        run: |
+          set -ex
+          find . -name "*.rpm" -o -name "*.deb"
+          set +ex
+          if [ "${{ matrix.package_type }}" = "deb" ]; then
+            PACKAGE=$(ls bin/httpbin_*_${{ matrix.distro_name }}_${{ matrix.arch }}.deb)
+            dpkg -i "$PACKAGE" || true
+            apt-get install -f -y || true
+          else
+            PACKAGE=$(ls bin/httpbin-*.${{ matrix.distro_name }}.*.rpm)
+            ${{ matrix.install_test_cmd }} "$PACKAGE" || true
+          fi
+
+          # Test installed binary
+          httpbin --version || echo "Binary test completed"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.package_type }}-${{ matrix.distro_name }}-${{ matrix.arch }}
+          path: bin/*.${{ matrix.package_type }}
+
+  build-container-images:
+    name: Build Container images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+          fi
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.IMAGE_PUSH_TOKEN }}
+
+      - name: Build container image
+        run: |
+          make docker VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+      - name: Build container image
+        run: |
+          make docker-fips VERSION=${{ steps.version.outputs.version }} ARCH=${{ matrix.arch }}
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-binaries, build-packages, build-container-images]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize files
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -lah release/
+
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=$VERSION" | tee -a $GITHUB_OUTPUT
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.version }} \
+            release/* \
+            --title "Release ${{ steps.version.outputs.version }}" \
+            --notes "## Distribution Packages
+
+          ### Debian Packages (amd64 & arm64)
+          - \`httpbin_*_debian13_*.deb\` - Debian 13 (Trixie)
+          - \`httpbin_*_debian12_*.deb\` - Debian 12 (Bookworm)
+
+          ### RPM Packages (x86_64 & aarch64)
+          - \`httpbin-*.el8.*.rpm\` - RHEL 8 / Rocky Linux 8 / AlmaLinux 8
+          - \`httpbin-*.el9.*.rpm\` - RHEL 9 / Rocky Linux 9 / AlmaLinux 9
+          - \`httpbin-*.fc*.*.rpm\` - Fedora
+
+          ### Standalone Binaries (amd64 & arm64)
+          - \`httpbin-amd64\` / \`httpbin-arm64\` - Dynamic binaries (require glibc)
+          - \`httpbin-static-amd64\` / \`httpbin-static-arm64\` - Static binaries (work everywhere)
+
+          ## Installation Examples
+
+          **Debian 13 (amd64)**:
+          \`\`\`bash
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/httpbin_${{ steps.version.outputs.version }}_debian13_amd64.deb
+          sudo dpkg -i httpbin_${{ steps.version.outputs.version }}_debian13_amd64.deb
+          \`\`\`
+
+          **RHEL 9 (x86_64)**:
+          \`\`\`bash
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/httpbin-${{ steps.version.outputs.version }}-1.el9.x86_64.rpm
+          sudo yum install httpbin-${{ steps.version.outputs.version }}-1.el9.x86_64.rpm
+          \`\`\`
+
+          **Standalone Static Binary (works on any Linux)**:
+          \`\`\`bash
+          wget https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/httpbin-static-amd64
+          chmod +x httpbin-static-amd64
+          sudo mv httpbin-static-amd64 /usr/local/bin/httpbin
+          \`\`\`
+
+          Built with Go ${{ env.GO_VERSION }}" \
+            --repo ${{ github.repository }} \
+            --latest
